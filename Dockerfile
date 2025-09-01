@@ -1,20 +1,19 @@
-# Simple image to run IBKR Client Portal Gateway on port 5000
-FROM ubuntu:22.04
+# Use an official OpenJDK runtime as base
+FROM openjdk:17-jdk-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
-WORKDIR /opt/ibkr
+# Install required tools
+RUN apt-get update && apt-get install -y curl unzip && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    curl unzip ca-certificates openjdk-11-jre-headless \
- && rm -rf /var/lib/apt/lists/*
+# Set environment variables
+ENV APP_HOME=/home/app/ibgateway
+WORKDIR $APP_HOME
 
-# Copy entrypoint
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Copy entrypoint script
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Expose gateway port
+# Expose the IBKR Gateway default port
 EXPOSE 5000
 
-# Run the entrypoint (downloads and launches the gateway)
-CMD ["/entrypoint.sh"]
+# Start the entrypoint
+CMD ["/usr/local/bin/entrypoint.sh"]

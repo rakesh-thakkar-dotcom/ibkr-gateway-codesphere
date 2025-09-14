@@ -1,18 +1,19 @@
-# Small base with Java + tools to fetch the gateway
-FROM debian:12-slim
+# Use an official OpenJDK runtime as base
+FROM openjdk:17-jdk-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl unzip ca-certificates openjdk-17-jre-headless \
- && rm -rf /var/lib/apt/lists/*
+# Install required tools
+RUN apt-get update && apt-get install -y curl unzip && rm -rf /var/lib/apt/lists/*
 
-ENV DEST=/opt/ibgateway
-WORKDIR ${DEST}
+# Set environment variables
+ENV APP_HOME=/home/app/ibgateway
+WORKDIR $APP_HOME
 
-# Start script
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Copy entrypoint script
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# IBKR Client Portal Gateway listens on 5000
+# Expose the IBKR Gateway default port
 EXPOSE 5000
 
-CMD ["/entrypoint.sh"]
+# Start the entrypoint
+CMD ["/usr/local/bin/entrypoint.sh"]

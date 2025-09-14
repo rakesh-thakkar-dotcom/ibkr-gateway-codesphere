@@ -1,19 +1,20 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+set -e
 
-DEST=${DEST:-/opt/ibgateway}
-ZIP=/tmp/clientportal.gw.zip
-URL="https://download2.interactivebrokers.com/portal/clientportal.gw.zip"
+# Define paths
+DEST="/home/app/ibgateway"
+ZIP="/tmp/clientportal.gw.zip"
 
-echo "[IBKR] Downloading gateway..."
-curl -fsSL "$URL" -o "$ZIP"
+echo ">>> Downloading IBKR Client Portal Gateway..."
+mkdir -p "$DEST"
+curl -L -o "$ZIP" "https://download2.interactivebrokers.com/portal/clientportal.gw.zip"
 
-echo "[IBKR] Unzipping..."
-rm -rf "$DEST" && mkdir -p "$DEST"
-unzip -o "$ZIP" -d "$DEST" > /dev/null
+echo ">>> Unzipping..."
+unzip -o "$ZIP" -d "$DEST"
 
+echo ">>> Making run.sh executable..."
 chmod +x "$DEST/bin/run.sh"
 
-echo "[IBKR] Starting gateway on port 5000..."
+echo ">>> Starting IBKR Gateway..."
 cd "$DEST"
-exec "$DEST/bin/run.sh" "$DEST/root/conf.yaml"
+./bin/run.sh root/conf.yaml

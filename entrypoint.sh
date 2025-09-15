@@ -1,59 +1,88 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --------------------------
-# Config
-# --------------------------
-# Render injects $PORT (e.g., 10000). Default to 10000 if not set (useful for local runs).
-PORT="${PORT:-10000}"
+# --------- Config ----------
+PORT="${PORT:-10000}"                  # Render passes this
 GW_DIR="/home/app/ibgateway"
 GW_ZIP="/tmp/clientportal.gw.zip"
+ZIP_URL="${IBKR_ZIP_URL:-}"
 
 echo ">>> Starting entrypoint"
-echo ">>> Render incoming PORT: ${PORT}"
+echo ">>> Render PORT: ${PORT}"
 
-# --------------------------
-# Fetch & unpack IBKR Gateway
-# --------------------------
-echo ">>> Fetching IBKR Client Portal Gateway..."
-# If your Dockerfile already bakes the zip in, you can skip the curl and
-# just ensure $GW_ZIP exists before unzip. Otherwise, uncomment the next line
-# with the official download URL you were using previously.
-#
-# curl -fsSL "https://<your-ibkr-gateway-zip-url>" -o "${GW_ZIP}"
+# --------- Fetch Gateway ----------
+if [[ -z "${ZIP_URL}" ]]; then
+  echo "ERROR: IBKR_ZIP_URL env var is not set. Please set it in Render."
+  exit 9
+fi
 
-# If a previous run left the folder, re-create it cleanly
+echo ">>> Fetching IBKR Client Portal Gateway from ${ZIP_URL} ..."
+curl -fsSL "${ZIP_URL}" -o "${GW_ZIP}"
+
 rm -rf "${GW_DIR}"
 mkdir -p "${GW_DIR}"
 
 echo ">>> Unzipping Gateway..."
 unzip -qo "${GW_ZIP}" -d "${GW_DIR}"
-
 chmod +x "${GW_DIR}/run.sh"
 
-# --------------------------
-# Start the Gateway
-# --------------------------
-# IMPORTANT:
-# We bind to 0.0.0.0 so Render can reach it, and we pass the Render port.
-# Some IBKR Gateway builds accept CLI flags; if yours differs, keep "root/conf.yaml"
-# and add/adjust the flags below so the service listens on ${PORT} at 0.0.0.0.
-#
-# If your binary doesn’t support these flags, remove them, but **it must**
-# listen on ${PORT} and on 0.0.0.0 for Render to work without a proxy.
+# --------- Start Gateway (HTTPS on 5000) ----------
+echo ">>> Starting IBKR Gateway (native HTTPS on :5000)..."
+# Run in background so we can start Nginx
+"${GW_DIR}/run.sh" root/conf.yaml &
+GW_PID=$!
 
-echo ">>> Starting IBKR Gateway on 0.0.0.0:${PORT} ..."
-# Try the most common flag forms; comment/uncomment as needed for your build.
-# 1) If your run.sh supports --port and --host:
-exec "${GW_DIR}/run.sh" root/conf.yaml --port "${PORT}" --host "0.0.0.0"
+# Basic wait-for-5000 loop (TLS)
+echo ">>> Waiting for gateway to accept HTTPS on :5000 ..."
+for i in {1..60}; do
+  if curl -skI "https://127.0.0.1:5000/" >/dev/null 2>&1; then
+    echo ">>> Gateway is up on :5000"
+    break
+  fi
+  sleep 1
+  if ! kill -0 "${GW_PID}" 2>/dev/null; then
+    echo "ERROR: Gateway process exited early."
+    wait "${GW_PID}" || true
+    exit 1
+  fi
+done
 
-# --------------------------
-# Notes / Alternatives
-# --------------------------
-# If your run.sh does NOT support --port/--host flags, you have two choices:
-#  A) Modify the gateway config so it listens on ${PORT} and on 0.0.0.0
-#  B) Re-introduce a tiny HTTP reverse-proxy on ${PORT} (e.g., nginx or caddy)
-#     and keep the gateway listening on 5000 HTTPS internally.
-#
-# For this script we aim for the simplest: bind the gateway directly to ${PORT}.
+# --------- Write Nginx config that listens on $PORT and proxies to https://127.0.0.1:5000 ----------
+echo ">>> Writing Nginx config for port ${PORT} -> https://127.0.0.1:5000 ..."
+NGX_CONF="/tmp/ibkr-nginx.conf"
+mkdir -p /tmp/nginx/{client_body,proxy,fastcgi,uwsgi,scgi}
+
+cat > "${NGX_CONF}" <<EOF
+events {}
+http {
+  include       /etc/nginx/mime.types;
+  default_type  application/octet-stream;
+  sendfile      on;
+
+  client_body_temp_path /tmp/nginx/client_body;
+  proxy_temp_path       /tmp/nginx/proxy;
+  fastcgi_temp_path     /tmp/nginx/fastcgi;
+  uwsgi_temp_path       /tmp/nginx/uwsgi;
+  scgi_temp_path        /tmp/nginx/scgi;
+
+  server {
+    listen ${PORT};
+    server_name _;
+
+    # Proxy everything to the gateway's HTTPS on 5000
+    location / {
+      proxy_pass https://127.0.0.1:5000;
+      proxy_ssl_verify off;                # gateway uses a self-signed cert
+      proxy_set_header Host               \$host;
+      proxy_set_header X-Forwarded-Proto  \$scheme;
+      proxy_set_header X-Forwarded-For    \$proxy_add_x_forwarded_for;
+      proxy_set_header X-Real-IP          \$remote_addr;
+    }
+  }
+}
+EOF
+
+echo ">>> Launching Nginx in the foreground on :${PORT} ..."
+exec nginx -g 'daemon off;' -c "${NGX_CONF}"
+
 

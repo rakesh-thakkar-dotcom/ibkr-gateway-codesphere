@@ -1,88 +1,77 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --------- Config ----------
-PORT="${PORT:-10000}"                  # Render passes this
-GW_DIR="/home/app/ibgateway"
-GW_ZIP="/tmp/clientportal.gw.zip"
-ZIP_URL="${IBKR_ZIP_URL:-}"
+PORT="${PORT:-10000}"
+ZIP_URL="${IBKR_ZIP_URL:-https://download2.interactivebrokers.com/portal/clientportal.gw.zip}"
 
-echo ">>> Starting entrypoint"
 echo ">>> Render PORT: ${PORT}"
-
-# --------- Fetch Gateway ----------
-if [[ -z "${ZIP_URL}" ]]; then
-  echo "ERROR: IBKR_ZIP_URL env var is not set. Please set it in Render."
-  exit 9
-fi
-
 echo ">>> Fetching IBKR Client Portal Gateway from ${ZIP_URL} ..."
-curl -fsSL "${ZIP_URL}" -o "${GW_ZIP}"
 
-rm -rf "${GW_DIR}"
-mkdir -p "${GW_DIR}"
+# Fetch the gateway zip
+mkdir -p /tmp /home/app/ibgateway
+curl -fsSL "${ZIP_URL}" -o /tmp/clientportal.gw.zip
 
 echo ">>> Unzipping Gateway..."
-unzip -qo "${GW_ZIP}" -d "${GW_DIR}"
-chmod +x "${GW_DIR}/run.sh"
+unzip -q -o /tmp/clientportal.gw.zip -d /home/app/ibgateway
 
-# --------- Start Gateway (HTTPS on 5000) ----------
-echo ">>> Starting IBKR Gateway (native HTTPS on :5000)..."
-# Run in background so we can start Nginx
-"${GW_DIR}/run.sh" root/conf.yaml &
+# The run script is in bin/ for current bundles
+RUN_SH=""
+if [ -f /home/app/ibgateway/bin/run.sh ]; then
+  RUN_SH="/home/app/ibgateway/bin/run.sh"
+elif [ -f /home/app/ibgateway/run.sh ]; then
+  RUN_SH="/home/app/ibgateway/run.sh"
+else
+  echo "!! Couldn't find run.sh after unzip. Directory listing:"
+  ls -la /home/app/ibgateway
+  exit 1
+fi
+
+chmod +x "${RUN_SH}"
+
+echo ">>> Starting IBKR Gateway (HTTPS on :5000)..."
+cd /home/app/ibgateway
+# Start the gateway in the background
+"${RUN_SH}" >/home/app/gateway.log 2>&1 &
 GW_PID=$!
 
-# Basic wait-for-5000 loop (TLS)
-echo ">>> Waiting for gateway to accept HTTPS on :5000 ..."
+echo ">>> Waiting for gateway to listen on :5000..."
 for i in {1..60}; do
-  if curl -skI "https://127.0.0.1:5000/" >/dev/null 2>&1; then
+  if curl -skI https://127.0.0.1:5000 >/dev/null 2>&1; then
     echo ">>> Gateway is up on :5000"
     break
   fi
   sleep 1
-  if ! kill -0 "${GW_PID}" 2>/dev/null; then
-    echo "ERROR: Gateway process exited early."
-    wait "${GW_PID}" || true
-    exit 1
-  fi
 done
 
-# --------- Write Nginx config that listens on $PORT and proxies to https://127.0.0.1:5000 ----------
-echo ">>> Writing Nginx config for port ${PORT} -> https://127.0.0.1:5000 ..."
-NGX_CONF="/tmp/ibkr-nginx.conf"
-mkdir -p /tmp/nginx/{client_body,proxy,fastcgi,uwsgi,scgi}
-
-cat > "${NGX_CONF}" <<EOF
-events {}
-http {
-  include       /etc/nginx/mime.types;
-  default_type  application/octet-stream;
-  sendfile      on;
-
-  client_body_temp_path /tmp/nginx/client_body;
-  proxy_temp_path       /tmp/nginx/proxy;
-  fastcgi_temp_path     /tmp/nginx/fastcgi;
-  uwsgi_temp_path       /tmp/nginx/uwsgi;
-  scgi_temp_path        /tmp/nginx/scgi;
-
-  server {
+# Nginx reverse proxy: $PORT -> https://127.0.0.1:5000
+echo ">>> Writing Nginx config (listen ${PORT} -> https://127.0.0.1:5000)..."
+cat >/etc/nginx/conf.d/default.conf <<EOF
+server {
     listen ${PORT};
-    server_name _;
+    access_log off;
+    error_log  /var/log/nginx/error.log warn;
 
-    # Proxy everything to the gateway's HTTPS on 5000
     location / {
-      proxy_pass https://127.0.0.1:5000;
-      proxy_ssl_verify off;                # gateway uses a self-signed cert
-      proxy_set_header Host               \$host;
-      proxy_set_header X-Forwarded-Proto  \$scheme;
-      proxy_set_header X-Forwarded-For    \$proxy_add_x_forwarded_for;
-      proxy_set_header X-Real-IP          \$remote_addr;
+        proxy_pass https://127.0.0.1:5000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # IBKR gateway uses its own cert; don't verify it here
+        proxy_ssl_verify off;
+        proxy_ssl_protocols TLSv1.2 TLSv1.3;
+
+        proxy_redirect off;
     }
-  }
 }
 EOF
 
-echo ">>> Launching Nginx in the foreground on :${PORT} ..."
-exec nginx -g 'daemon off;' -c "${NGX_CONF}"
+# Make sure nginx can start cleanly
+mkdir -p /var/lib/nginx/tmp /var/lib/nginx/body /run/nginx
 
+echo ">>> Launching Nginx in the foreground..."
+exec nginx -g 'daemon off;'
 

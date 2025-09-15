@@ -1,19 +1,23 @@
-# Use an official OpenJDK runtime as base
-FROM openjdk:17-jdk-slim
+# Dockerfile
+FROM ubuntu:24.04
 
-# Install required tools
-RUN apt-get update && apt-get install -y curl unzip && rm -rf /var/lib/apt/lists/*
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl unzip jq ca-certificates \
+    openjdk-17-jre-headless \
+    nginx-light net-tools && \
+    rm -rf /var/lib/apt/lists/*
 
-# Set environment variables
-ENV APP_HOME=/home/app/ibgateway
-WORKDIR $APP_HOME
+# Create an unprivileged user (optional but good practice)
+RUN useradd -m -u 1000 app
+WORKDIR /home/app
 
-# Copy entrypoint script
+# Copy entrypoint
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Expose the IBKR Gateway default port
-EXPOSE 5000
+# Render injects PORT at runtime; we don't choose it here.
+# (Expose is optional on Render, but harmless.)
+EXPOSE 10000
 
-# Start the entrypoint
-CMD ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

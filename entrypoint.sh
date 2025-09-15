@@ -93,6 +93,8 @@ http {
     # ---- Rewrite cookies & redirects coming back as localhost ----
     proxy_cookie_domain localhost \$host;     # Set-Cookie Domain=localhost -> your public host
     proxy_redirect https://localhost:5000/ /;
+    proxy_cookie_path / "/; Secure; SameSite=None";  # <-- add this line
+
 
     # ---- Rewrite absolute links in HTML (e.g., https://localhost:5000/...) ----
     sub_filter_types text/html text/css application/javascript application/json;

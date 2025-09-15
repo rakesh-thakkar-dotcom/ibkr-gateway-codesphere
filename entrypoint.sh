@@ -4,10 +4,12 @@ set -Eeuo pipefail
 echo ">>> Starting entrypoint"
 
 # ----- Constants & paths -----
-DEST="${HOME}/ibgateway"
+DEST="/home/app/ibgateway"
 ZIP="/tmp/clientportal.gw.zip"
-GATEWAY_INTERNAL_PORT=5000         # IBKR Gateway always runs HTTPS on 5000 internally
-RENDER_PORT="${PORT:-10000}"       # Render injects PORT; default for local dev
+GATEWAY_INTERNAL_PORT=5000                # IBKR Gateway runs HTTPS on 5000
+RENDER_PORT="${PORT:-10000}"              # Render injects PORT at runtime
+NGX_TMP="/tmp/ibkr-nginx"                 # absolute paths for nginx temp dirs
+NGX_CONF="/tmp/ibkr-nginx.conf"
 
 echo ">>> Render incoming HTTP PORT: ${RENDER_PORT}"
 echo ">>> Internal Gateway HTTPS port: ${GATEWAY_INTERNAL_PORT}"
@@ -32,28 +34,25 @@ echo ">>> Starting IBKR Gateway (HTTPS on :${GATEWAY_INTERNAL_PORT})..."
 
 # ----- Wait for the gateway to begin listening on :5000 -----
 echo ">>> Waiting for gateway to listen on :${GATEWAY_INTERNAL_PORT}..."
-for i in $(seq 1 90); do
+for i in $(seq 1 120); do
   if ss -ltpn 2>/dev/null | grep -q ":${GATEWAY_INTERNAL_PORT} "; then
     echo ">>> Gateway is up on :${GATEWAY_INTERNAL_PORT}"
     break
   fi
   sleep 1
-  if [[ $i -eq 90 ]]; then
-    echo "!!! Gateway did not come up on :${GATEWAY_INTERNAL_PORT} within 90s" >&2
+  if [[ $i -eq 120 ]]; then
+    echo "!!! Gateway did not come up on :${GATEWAY_INTERNAL_PORT} within 120s" >&2
     exit 1
   fi
 done
 
-# ----- Prepare Nginx temp paths (must be writable) -----
+# ----- Prepare Nginx temp paths (absolute and writable) -----
 echo ">>> Ensuring Nginx temp paths exist..."
-for d in client_body proxy fastcgi uwsgi scgi; do
-  mkdir -p "${HOME}/nginx/tmp/${d}"
-done
+mkdir -p "${NGX_TMP}/client_body" "${NGX_TMP}/proxy" "${NGX_TMP}/fastcgi" "${NGX_TMP}/uwsgi" "${NGX_TMP}/scgi"
 
 # ----- Write Nginx config: listen on $PORT -> proxy to https://127.0.0.1:5000 -----
 echo ">>> Writing Nginx config (listen ${RENDER_PORT} -> https://127.0.0.1:${GATEWAY_INTERNAL_PORT})..."
-
-cat > "${HOME}/nginx.conf" <<'NGINX'
+cat > "${NGX_CONF}" <<NGINX
 worker_processes  1;
 
 events {
@@ -61,34 +60,35 @@ events {
 }
 
 http {
-  # No 'include mime.types;' — that file doesn't exist in this image
+  # We only proxy; no mime.types include needed
   default_type  application/octet-stream;
   sendfile      on;
   keepalive_timeout  65;
 
-  # Writable temp paths
-  client_body_temp_path $HOME/nginx/tmp/client_body;
-  proxy_temp_path       $HOME/nginx/tmp/proxy;
-  fastcgi_temp_path     $HOME/nginx/tmp/fastcgi;
-  uwsgi_temp_path       $HOME/nginx/tmp/uwsgi;
-  scgi_temp_path        $HOME/nginx/tmp/scgi;
+  # Absolute temp paths
+  client_body_temp_path ${NGX_TMP}/client_body;
+  proxy_temp_path       ${NGX_TMP}/proxy;
+  fastcgi_temp_path     ${NGX_TMP}/fastcgi;
+  uwsgi_temp_path       ${NGX_TMP}/uwsgi;
+  scgi_temp_path        ${NGX_TMP}/scgi;
 
   # Upstream is the IBKR Gateway on HTTPS 127.0.0.1:5000
   upstream ibkr_upstream {
-    server 127.0.0.1:5000;
+    server 127.0.0.1:${GATEWAY_INTERNAL_PORT};
   }
 
   server {
-    listen PORT_TO_LISTEN;
+    listen ${RENDER_PORT};
 
     # Forward headers to keep client IP / host info
-    proxy_set_header Host              $host;
-    proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Host              \$host;
+    proxy_set_header X-Real-IP         \$remote_addr;
+    proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
 
     # The Gateway uses a self-signed cert
     proxy_ssl_server_name on;
+    proxy_ssl_protocols TLSv1.2 TLSv1.3;
     proxy_ssl_verify off;
 
     location / {
@@ -98,9 +98,6 @@ http {
 }
 NGINX
 
-# Substitute the render port into the config
-sed -i "s/PORT_TO_LISTEN/${RENDER_PORT}/g" "${HOME}/nginx.conf"
-
 # ----- Launch Nginx in the foreground -----
 echo ">>> Launching Nginx in the foreground..."
-exec nginx -c "${HOME}/nginx.conf" -g 'daemon off;'
+exec nginx -c "${NGX_CONF}" -g 'daemon off;'

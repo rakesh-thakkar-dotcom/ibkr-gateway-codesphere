@@ -1,14 +1,19 @@
-# Dockerfile
-FROM ubuntu:24.04
+# Dockerfile (Debian, reliable on Render)
+FROM debian:bookworm-slim
 
-ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl unzip jq ca-certificates \
-    openjdk-17-jre-headless \
-    nginx-light net-tools && \
-    rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-lc"]
 
-# Create an unprivileged user (optional but good practice)
+# Install dependencies: Java 17, curl/unzip/jq, nginx, net-tools for 'ss'
+RUN set -euxo pipefail \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates curl unzip jq \
+       openjdk-17-jre-headless \
+       nginx net-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create unprivileged user and working dir
 RUN useradd -m -u 1000 app
 WORKDIR /home/app
 
@@ -16,8 +21,7 @@ WORKDIR /home/app
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Render injects PORT at runtime; we don't choose it here.
-# (Expose is optional on Render, but harmless.)
+# (Optional) expose a dummy port; Render sets $PORT at runtime anyway.
 EXPOSE 10000
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

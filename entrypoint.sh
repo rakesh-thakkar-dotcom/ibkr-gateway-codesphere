@@ -60,7 +60,6 @@ events {
 }
 
 http {
-  # We only proxy; no mime.types include needed
   default_type  application/octet-stream;
   sendfile      on;
   keepalive_timeout  65;
@@ -72,26 +71,27 @@ http {
   uwsgi_temp_path       ${NGX_TMP}/uwsgi;
   scgi_temp_path        ${NGX_TMP}/scgi;
 
-  # Upstream is the IBKR Gateway on HTTPS 127.0.0.1:5000
   upstream ibkr_upstream {
-    server 127.0.0.1:${GATEWAY_INTERNAL_PORT};
+    server 127.0.0.1:${GATEWAY_INTERNAL_PORT};   # IBKR gateway HTTPS
   }
 
   server {
     listen ${RENDER_PORT};
 
-    # Forward headers to keep client IP / host info
+    # Forward headers
     proxy_set_header Host              \$host;
     proxy_set_header X-Real-IP         \$remote_addr;
     proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
 
-    # The Gateway uses a self-signed cert
-    proxy_ssl_server_name on;
+    # ---- TLS to upstream (IBKR gateway) ----
+    proxy_ssl_server_name on;              # enable SNI
+    proxy_ssl_name localhost;              # set SNI name expected by gateway
     proxy_ssl_protocols TLSv1.2 TLSv1.3;
-    proxy_ssl_verify off;
+    proxy_ssl_verify off;                  # self-signed cert
 
     location / {
+      proxy_http_version 1.1;
       proxy_pass https://ibkr_upstream;
     }
   }
@@ -101,3 +101,4 @@ NGINX
 # ----- Launch Nginx in the foreground -----
 echo ">>> Launching Nginx in the foreground..."
 exec nginx -c "${NGX_CONF}" -g 'daemon off;'
+

@@ -9,10 +9,8 @@ RUN useradd -m -u 1000 app
 WORKDIR /home/app
 
 ENV PORT=10000
-
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 10000
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-

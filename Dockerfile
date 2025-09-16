@@ -1,12 +1,16 @@
 FROM debian:bookworm-slim
 
-# curl (download ZIP), unzip (extract), nginx (reverse proxy)
+# System deps:
+# - ca-certificates: TLS trust store
+# - curl, unzip: to download/unpack IBKR gateway
+# - nginx: reverse proxy to expose the IBKR HTTPS service
+# - openjdk-17-jre-headless: Java runtime required by IBKR gateway
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl unzip nginx \
+      ca-certificates curl unzip nginx openjdk-17-jre-headless \
  && rm -rf /var/lib/apt/lists/*
 
-# Non-root user
+# Non-root user (Render-friendly)
 RUN useradd -m -u 1000 app
 WORKDIR /home/app
 
@@ -14,10 +18,10 @@ WORKDIR /home/app
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Run as non-root; Nginx will listen on high port ($PORT)
+# Run as non-root
 USER app
 
-# Default for local runs (Render sets $PORT for us)
+# Render sets $PORT at runtime; expose a sane local default
 EXPOSE 10000
 
 CMD ["/usr/local/bin/entrypoint.sh"]

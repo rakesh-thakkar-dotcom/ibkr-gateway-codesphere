@@ -136,3 +136,4 @@ sed -i "s/__RENDER_PORT__/${RENDER_PORT}/g" /tmp/ibkr-nginx.conf
 
 echo ">>> Launching Nginx in the foreground..."
 exec nginx -c /tmp/ibkr-nginx.conf -g 'daemon off;'
+

@@ -3,58 +3,67 @@ set -euo pipefail
 
 echo ">>> Starting entrypoint"
 
-# Render injects $PORT. Default to 10000 for local dev.
+# Render injects $PORT; default 10000 for local runs.
 RENDER_PORT="${PORT:-10000}"
 GATEWAY_PORT=5000
 IBKR_ZIP_URL="https://download2.interactivebrokers.com/portal/clientportal.gw.zip"
+EXTRACT_DIR="/home/app/ibgateway"
 
 echo ">>> Render PORT: $RENDER_PORT"
 echo ">>> Internal Gateway HTTPS port: $GATEWAY_PORT"
 echo ">>> IBKR bundle URL: $IBKR_ZIP_URL"
 
-# Fetch the IBKR Client Portal Gateway (cache per container boot)
+# Download once per boot
 if [ ! -f /tmp/clientportal.gw.zip ]; then
   echo ">>> Downloading IBKR Client Portal Gateway..."
   curl -fsSL "$IBKR_ZIP_URL" -o /tmp/clientportal.gw.zip
 fi
 
+# Fresh extract
 echo ">>> Unzipping Gateway..."
-mkdir -p /home/app/ibgateway
-unzip -oq /tmp/clientportal.gw.zip -d /home/app/ibgateway
+rm -rf "$EXTRACT_DIR"
+mkdir -p "$EXTRACT_DIR"
+unzip -oq /tmp/clientportal.gw.zip -d "$EXTRACT_DIR"
 
-# IBKR’s launcher lives at bin/run.sh
-LAUNCHER="/home/app/ibgateway/bin/run.sh"
-if [ ! -f "$LAUNCHER" ]; then
-  echo "!!! ERROR: Expected launcher not found at ${LAUNCHER}"
-  ls -la /home/app/ibgateway || true
+# Sanity checks
+echo ">>> Listing extracted contents (top-level):"
+ls -la "$EXTRACT_DIR"
+
+if [ ! -d "$EXTRACT_DIR/bin" ] || [ ! -f "$EXTRACT_DIR/bin/run.sh" ]; then
+  echo "!!! ERROR: Expected launcher not found under $EXTRACT_DIR/bin"
+  find "$EXTRACT_DIR" -maxdepth 2 -type f -name "run.sh" -print || true
   exit 1
 fi
-chmod +x "$LAUNCHER"
 
-# Start IBKR (it listens on HTTPS :5000 inside the container)
+if [ ! -f "$EXTRACT_DIR/root/conf.yaml" ]; then
+  echo "!!! ERROR: Expected config at $EXTRACT_DIR/root/conf.yaml not found."
+  find "$EXTRACT_DIR" -maxdepth 2 -type f -name "conf.yaml" -print || true
+  exit 1
+fi
+
+chmod +x "$EXTRACT_DIR/bin/run.sh"
+
+# IMPORTANT: run from the extracted dir so run.sh's relative classpath works
+cd "$EXTRACT_DIR"
+
 echo ">>> Starting IBKR Gateway (HTTPS on :$GATEWAY_PORT)..."
-"$LAUNCHER" root/conf.yaml &
+./bin/run.sh root/conf.yaml &
 
-# Wait for :5000 to be reachable WITHOUT netcat (use /dev/tcp)
+# Wait for the gateway to accept HTTPS on :5000 (no netcat, use curl+TCP)
 echo ">>> Waiting for gateway to listen on :$GATEWAY_PORT..."
 for i in {1..120}; do
-  if (exec 3<>/dev/tcp/127.0.0.1/$GATEWAY_PORT) 2>/dev/null; then
-    exec 3>&- 3<&-
+  if curl -sk "https://127.0.0.1:${GATEWAY_PORT}/" -o /dev/null --max-time 1; then
     echo ">>> Gateway is up on :$GATEWAY_PORT"
     break
   fi
   sleep 1
 done
 
-# Prepare Nginx temp dirs under /tmp (non-root friendly)
+# Nginx temp dirs in /tmp (non-root safe)
 echo ">>> Ensuring Nginx temp paths exist..."
 mkdir -p /tmp/nginx/client_body /tmp/nginx/proxy /tmp/nginx/fastcgi /tmp/nginx/uwsgi /tmp/nginx/scgi
 
-# Write an Nginx conf that:
-# - listens on $PORT
-# - proxies to https://127.0.0.1:5000 (self-signed)
-# - fixes redirects/cookies from localhost to your host
-# - logs to stdout/stderr and uses a PID in /tmp (non-root safe)
+# Minimal Nginx config: listen on $PORT and proxy to https://127.0.0.1:5000
 cat >/tmp/ibkr-nginx.conf <<'NGX'
 worker_processes  1;
 pid /tmp/nginx.pid;
@@ -81,7 +90,6 @@ http {
     location / {
       proxy_pass https://127.0.0.1:5000;
 
-      # Let upstream know original scheme/host
       proxy_set_header Host              $host;
       proxy_set_header X-Real-IP         $remote_addr;
       proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
@@ -89,16 +97,13 @@ http {
       proxy_set_header X-Forwarded-Host  $host;
       proxy_set_header X-Forwarded-Port  443;
 
-      # WebSockets
       proxy_http_version 1.1;
       proxy_set_header Upgrade           $http_upgrade;
       proxy_set_header Connection        "upgrade";
 
-      # Upstream has a self-signed cert
       proxy_ssl_verify      off;
       proxy_ssl_server_name off;
 
-      # Fix redirects and cookies that point to localhost
       proxy_redirect https://localhost:5000/  /;
       proxy_redirect https://127.0.0.1:5000/  /;
       proxy_cookie_domain  localhost  $host;
@@ -108,9 +113,8 @@ http {
 }
 NGX
 
-# Inject actual port
+# Inject actual Render port
 sed -i "s/__RENDER_PORT__/${RENDER_PORT}/g" /tmp/ibkr-nginx.conf
 
 echo ">>> Launching Nginx in the foreground..."
 exec nginx -c /tmp/ibkr-nginx.conf -g 'daemon off;'
-

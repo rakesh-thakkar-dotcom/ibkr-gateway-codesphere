@@ -13,23 +13,32 @@ echo ">>> Internal Gateway HTTPS port: $GATEWAY_PORT"
 
 # Download IBKR Gateway if not already cached this boot
 if [ ! -f /tmp/clientportal.gw.zip ]; then
-  echo ">>> Fetching IBKR Client Portal Gateway from $IBKR_ZIP_URL ..."
-  curl -sSL "$IBKR_ZIP_URL" -o /tmp/clientportal.gw.zip
+  echo ">>> Fetching IBKR Client Portal Gateway from ${IBKR_ZIP_URL} ..."
+  curl -fsSL "${IBKR_ZIP_URL}" -o /tmp/clientportal.gw.zip
 fi
 
 echo ">>> Unzipping Gateway..."
 mkdir -p /home/app/ibgateway
-unzip -o /tmp/clientportal.gw.zip -d /home/app/ibgateway > /dev/null
+unzip -oq /tmp/clientportal.gw.zip -d /home/app/ibgateway
 
-# Ensure run.sh is executable (IBKR ships it inside the zip)
-chmod +x /home/app/ibgateway/run.sh || true
+# IBKR ships the launcher at bin/run.sh (not /run.sh)
+LAUNCHER="/home/app/ibgateway/bin/run.sh"
+if [ ! -f "$LAUNCHER" ]; then
+  echo "!!! ERROR: Expected launcher not found at ${LAUNCHER}"
+  echo "Contents of /home/app/ibgateway:"
+  ls -la /home/app/ibgateway || true
+  exit 1
+fi
+chmod +x "$LAUNCHER"
 
 echo ">>> Starting IBKR Gateway (HTTPS on :$GATEWAY_PORT)..."
-/home/app/ibgateway/run.sh root/conf.yaml &
+# IBKR’s run.sh takes a config path relative to the root inside the unzipped bundle.
+# Their examples use root/conf.yaml.
+"$LAUNCHER" root/conf.yaml &
 
-# --- Wait for :5000 without netcat (use Bash's /dev/tcp) ---
+# --- Wait for :5000 (no netcat required; use Bash /dev/tcp) ---
 echo ">>> Waiting for gateway to listen on :$GATEWAY_PORT..."
-for i in {1..90}; do
+for i in {1..120}; do
   if (exec 3<>/dev/tcp/127.0.0.1/$GATEWAY_PORT) 2>/dev/null; then
     exec 3>&- 3<&-
     echo ">>> Gateway is up on :$GATEWAY_PORT"
@@ -42,13 +51,15 @@ done
 echo ">>> Ensuring Nginx temp paths exist..."
 mkdir -p /tmp/nginx/client_body /tmp/nginx/proxy /tmp/nginx/fastcgi /tmp/nginx/uwsgi /tmp/nginx/scgi
 
-# Generate an Nginx config that:
-# - Listens on $PORT
-# - Proxies to the IBKR HTTPS gateway on 127.0.0.1:5000
-# - Rewrites redirects and cookies from localhost -> your Render host
-# - Disables upstream TLS verification (self-signed)
+# Generate Nginx config:
+# - Listen on $PORT
+# - Proxy to local HTTPS gateway 127.0.0.1:5000
+# - Rewrite redirects/cookies from localhost -> $host
+# - Disable upstream TLS verification (self-signed)
+# - Log to stdout/stderr and store PID under /tmp (non-root safe)
 cat >/tmp/ibkr-nginx.conf <<'NGX'
 worker_processes  1;
+pid /tmp/nginx.pid;
 
 events { worker_connections 1024; }
 
@@ -56,7 +67,9 @@ http {
   include       /etc/nginx/mime.types;
   default_type  application/octet-stream;
 
-  # Temp paths must be writable by the running user
+  access_log /dev/stdout;
+  error_log  /dev/stderr info;
+
   client_body_temp_path /tmp/nginx/client_body;
   proxy_temp_path       /tmp/nginx/proxy;
   fastcgi_temp_path     /tmp/nginx/fastcgi;
@@ -79,13 +92,13 @@ http {
       proxy_set_header X-Forwarded-Host  $host;
       proxy_set_header X-Forwarded-Port  443;
 
-      # WebSockets (IBKR uses them)
+      # WebSockets
       proxy_http_version 1.1;
       proxy_set_header Upgrade           $http_upgrade;
       proxy_set_header Connection        "upgrade";
 
       # Upstream uses self-signed cert
-      proxy_ssl_verify     off;
+      proxy_ssl_verify      off;
       proxy_ssl_server_name off;
 
       # Fix redirects like Location: https://localhost:5000/...
@@ -100,9 +113,10 @@ http {
 }
 NGX
 
-# Inject actual port into the config template
+# Inject the actual Render port into the template
 sed -i "s/__RENDER_PORT__/${RENDER_PORT}/g" /tmp/ibkr-nginx.conf
 
 echo ">>> Launching Nginx in the foreground..."
 exec nginx -c /tmp/ibkr-nginx.conf -g 'daemon off;'
+
 

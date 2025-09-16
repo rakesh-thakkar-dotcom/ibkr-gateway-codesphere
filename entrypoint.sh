@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo ">>> Starting entrypoint"
 
-# Render provides $PORT for the public listener (HTTP).
+# Render provides $PORT (the public HTTP listener inside the container).
 RENDER_PORT="${PORT:-10000}"
 GATEWAY_PORT=5000
 IBKR_ZIP_URL="${IBKR_ZIP_URL:-https://download2.interactivebrokers.com/portal/clientportal.gw.zip}"
@@ -13,11 +13,9 @@ echo ">>> Render PORT: $RENDER_PORT"
 echo ">>> Internal Gateway HTTPS port: $GATEWAY_PORT"
 echo ">>> IBKR bundle URL: $IBKR_ZIP_URL"
 
-# --- Download the IBKR bundle once per boot ---
-if [ ! -f /tmp/clientportal.gw.zip ]; then
-  echo ">>> Downloading IBKR Client Portal Gateway..."
-  curl -fsSL "$IBKR_ZIP_URL" -o /tmp/clientportal.gw.zip
-fi
+# --- Download the IBKR bundle (once per boot) ---
+echo ">>> Downloading IBKR Client Portal Gateway..."
+curl -fsSL "$IBKR_ZIP_URL" -o /tmp/clientportal.gw.zip
 
 # --- Fresh unzip into EXTRACT_DIR ---
 echo ">>> Unzipping Gateway..."
@@ -28,7 +26,7 @@ unzip -oq /tmp/clientportal.gw.zip -d "$EXTRACT_DIR"
 echo ">>> Listing extracted contents (top-level):"
 ls -la "$EXTRACT_DIR"
 
-# --- Sanity checks expected by the vendor scripts ---
+# --- Sanity checks (paths used by vendor scripts) ---
 if [ ! -f "$EXTRACT_DIR/bin/run.sh" ]; then
   echo "!!! ERROR: $EXTRACT_DIR/bin/run.sh not found"
   find "$EXTRACT_DIR" -maxdepth 3 -name run.sh -print || true
@@ -41,14 +39,13 @@ if [ ! -f "$EXTRACT_DIR/root/conf.yaml" ]; then
 fi
 chmod +x "$EXTRACT_DIR/bin/run.sh"
 
-# --- IMPORTANT: run from the extracted dir so relative classpaths resolve ---
+# --- Start gateway from the extracted dir (so relative classpaths resolve) ---
 cd "$EXTRACT_DIR"
 
 echo ">>> Starting IBKR Gateway (HTTPS on :$GATEWAY_PORT)..."
-# The vendor script defaults to 5000 TLS based on conf.yaml
 ./bin/run.sh root/conf.yaml &
 
-# --- Wait for the gateway to accept HTTPS on :5000 (use curl, no nc needed) ---
+# --- Wait for HTTPS on :5000 (use curl; no nc dependency) ---
 echo ">>> Waiting for gateway to listen on :$GATEWAY_PORT..."
 for i in {1..120}; do
   if curl -sk "https://127.0.0.1:${GATEWAY_PORT}/" -o /dev/null --max-time 1; then
@@ -58,7 +55,7 @@ for i in {1..120}; do
   sleep 1
 done
 
-# --- Nginx config (non-root safe) ---
+# --- Nginx config (run as non-root; log to stdout/stderr) ---
 echo ">>> Ensuring Nginx temp paths exist..."
 mkdir -p /tmp/nginx/client_body /tmp/nginx/proxy /tmp/nginx/fastcgi /tmp/nginx/uwsgi /tmp/nginx/scgi
 
@@ -76,15 +73,18 @@ http {
   server_tokens off;
   absolute_redirect off;
 
+  # IBKR auth can set large cookies; give us headroom
+  client_max_body_size 10m;
+  large_client_header_buffers 4 32k;
+  proxy_buffers 16 8k;
+  proxy_buffer_size 64k;
+  proxy_busy_buffers_size 64k;
+
   client_body_temp_path /tmp/nginx/client_body;
   proxy_temp_path       /tmp/nginx/proxy;
   fastcgi_temp_path     /tmp/nginx/fastcgi;
   uwsgi_temp_path       /tmp/nginx/uwsgi;
   scgi_temp_path        /tmp/nginx/scgi;
-
-  # Ensure big enough headers for cookies
-  proxy_buffers 16 8k;
-  proxy_buffer_size 16k;
 
   map $http_upgrade $connection_upgrade {
     default upgrade;
@@ -95,7 +95,7 @@ http {
     listen       __RENDER_PORT__;
     server_name  _;
 
-    # --- Main proxy to the internal HTTPS gateway on :5000 ---
+    # Main proxy to the internal HTTPS gateway on :5000
     location / {
       proxy_pass https://127.0.0.1:5000;
 
@@ -109,22 +109,23 @@ http {
       proxy_set_header Upgrade           $http_upgrade;
       proxy_set_header Connection        $connection_upgrade;
 
+      # Preserve these for SSO/CSRF checks
+      proxy_set_header Referer           $http_referer;
+      proxy_set_header Origin            $http_origin;
+
       proxy_http_version 1.1;
 
-      # The backend is TLS with a self-signed / internal cert
+      # Backend is TLS with an internal/self-signed cert
       proxy_ssl_verify      off;
       proxy_ssl_server_name off;
 
-      # Fix absolute redirects and cookie domains from the backend
-      proxy_redirect https://localhost:5000/  /;
-      proxy_redirect https://127.0.0.1:5000/  /;
+      # --- Fix absolute redirects from backend (any path) ---
+      proxy_redirect ~^https://(localhost|127\.0\.0\.1):5000(/.*)?$ https://$host$2;
 
-      # Rewrite cookie domain so browser accepts cookies for your public host
-      proxy_cookie_domain localhost  $host;
-      proxy_cookie_domain 127.0.0.1  $host;
+      # --- Rewrite cookie domains from localhost/127.0.0.1 to our host ---
+      proxy_cookie_domain ~^(localhost|127\.0\.0\.1)$ $host;
 
-      # Append cookie attributes so modern browsers keep them
-      # This appends to *all* cookies returned by the backend
+      # --- Append attributes so browsers keep cookies across redirects ---
       proxy_cookie_path / "/; Secure; SameSite=None";
     }
   }

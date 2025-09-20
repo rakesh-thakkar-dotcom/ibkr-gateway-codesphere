@@ -1,3 +1,4 @@
+# ---- Base image ----
 FROM debian:bookworm-slim
 
 # System deps:
@@ -10,36 +11,39 @@ RUN apt-get update \
       ca-certificates curl unzip nginx openjdk-17-jre-headless \
  && rm -rf /var/lib/apt/lists/*
 
-# Non-root user (Render-friendly)
+# ---- Non-root user (Render-friendly) ----
 RUN useradd -m -u 1000 app
 WORKDIR /home/app
 
-# Add this line so the template file lands in the image:
+# ---- Copy Nginx configs ----
+# TEMPLATE stays in /home/app so entrypoint can substitute PORTs at runtime.
 COPY nginx/app.conf /home/app/nginx/app.conf
+# This replaces the default Nginx config to use app-owned dirs (pid/temp).
+COPY nginx/nginx.conf /etc/nginx/nginx.conf
 
-# Entrypoint
+# ---- Entrypoint ----
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Ensure nginx system dirs exist and are writable by the non-root user
-RUN mkdir -p /var/cache/nginx /var/run /var/log/nginx \
- && chown -R app:app /var/cache/nginx /var/run /var/log/nginx
-
-# Make nginx dirs (incl. conf.d) writable for the non-root user
-RUN mkdir -p /var/cache/nginx /var/run /var/log/nginx /etc/nginx/conf.d \
- && chown -R app:app /var/cache/nginx /var/run /var/log/nginx /etc/nginx
-
-# Nginx writable dirs for non-root runtime
-RUN mkdir -p /var/cache/nginx /var/run /var/log/nginx \
-           /etc/nginx/conf.d \
-           /var/lib/nginx/body /var/lib/nginx/fastcgi /var/lib/nginx/proxy /var/lib/nginx/scgi /var/lib/nginx/uwsgi \
+# ---- Ensure all Nginx runtime paths exist and are app-writable ----
+RUN mkdir -p \
+      /var/cache/nginx/client_temp \
+      /var/cache/nginx/proxy_temp \
+      /var/cache/nginx/fastcgi_temp \
+      /var/cache/nginx/uwsgi_temp \
+      /var/cache/nginx/scgi_temp \
+      /var/run/nginx \
+      /var/log/nginx \
+      /etc/nginx/conf.d \
+      /var/lib/nginx \
  && chown -R app:app /var/cache/nginx /var/run /var/log/nginx /etc/nginx /var/lib/nginx
 
-# Run as non-root
+# ---- Run as non-root ----
 USER app
 
 # Render sets $PORT at runtime; expose a sane local default
 EXPOSE 10000
 
 CMD ["/usr/local/bin/entrypoint.sh"]
+
 

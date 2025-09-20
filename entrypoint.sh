@@ -10,6 +10,11 @@ export PORT="${PORT:-10000}"
 export GATEWAY_PORT="${GATEWAY_PORT:-5000}"
 export IBKR_BUNDLE_URL="${IBKR_BUNDLE_URL:-https://download2.interactivebrokers.com/portal/clientportal.gw.zip}"
 
+# Paths we fully control (no writes to /etc or /var)
+CONF_ROOT="/home/app/nginx-conf"
+CONF_D="$CONF_ROOT/conf.d"
+RUNTIME_ROOT="/home/app/nginx-runtime"
+
 echo ">>> Render PORT: ${PORT}"
 echo ">>> Internal Gateway HTTPS port: ${GATEWAY_PORT}"
 echo ">>> IBKR bundle URL: ${IBKR_BUNDLE_URL}"
@@ -43,26 +48,24 @@ for i in {1..60}; do
   sleep 1
 done
 
-# --- Ensure Nginx runtime paths exist at runtime (harmless if already present) ---
+# --- Ensure Nginx runtime paths exist (under /home/app, all writable) ---
 mkdir -p \
-  /var/cache/nginx/client_temp \
-  /var/cache/nginx/proxy_temp \
-  /var/cache/nginx/fastcgi_temp \
-  /var/cache/nginx/uwsgi_temp \
-  /var/cache/nginx/scgi_temp \
-  /var/run/nginx
+  "${RUNTIME_ROOT}/client_temp" \
+  "${RUNTIME_ROOT}/proxy_temp" \
+  "${RUNTIME_ROOT}/fastcgi_temp" \
+  "${RUNTIME_ROOT}/uwsgi_temp" \
+  "${RUNTIME_ROOT}/scgi_temp" \
+  "${CONF_D}"
 
 # --- Write Nginx config (template -> final) ---
 if [ -f "./nginx/app.conf" ]; then
-  echo ">>> Writing Nginx config from nginx/app.conf (templated)..."
-  mkdir -p /etc/nginx/conf.d
-  # Substitute placeholders
+  echo ">>> Writing Nginx config from nginx/app.conf (templated) -> ${CONF_D}/app.conf"
   sed -e "s/__PORT__/${PORT}/g" \
       -e "s/__GATEWAY_PORT__/${GATEWAY_PORT}/g" \
-      ./nginx/app.conf > /etc/nginx/conf.d/app.conf
+      ./nginx/app.conf > "${CONF_D}/app.conf"
 else
-  echo ">>> Writing Nginx config (inline fallback)..."
-  cat >/etc/nginx/conf.d/app.conf <<NGINX
+  echo ">>> Writing Nginx config (inline fallback) -> ${CONF_D}/app.conf"
+  cat > "${CONF_D}/app.conf" <<NGINX
 server {
     listen 0.0.0.0:${PORT};
     server_name _;
@@ -96,8 +99,8 @@ server {
 NGINX
 fi
 
-# --- Launch Nginx in the foreground (container main process) ---
+# --- Launch Nginx in the foreground using our config under /home/app ---
 echo ">>> Launching Nginx in the foreground..."
-exec nginx -g 'daemon off;'
+exec nginx -c "${CONF_ROOT}/nginx.conf" -g 'daemon off;'
 
 

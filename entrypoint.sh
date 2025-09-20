@@ -44,8 +44,8 @@ for i in {1..60}; do
 done
 echo ">>> Gateway is up on :${GATEWAY_PORT}"
 
-# --- Ensure Nginx paths exist ---
-mkdir -p /var/cache/nginx /var/run /var/log/nginx
+# --- Ensure Nginx paths exist ---  
+# mkdir -p /var/cache/nginx /var/run /var/log/nginx  commented RST
 
 # --- Write Nginx config ---
 # If you created nginx/app.conf in your repo, we’ll transform its placeholders.

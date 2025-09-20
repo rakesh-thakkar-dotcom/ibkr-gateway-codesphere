@@ -48,7 +48,7 @@ for i in {1..60}; do
   sleep 1
 done
 
-# --- Ensure Nginx runtime paths exist (under /home/app, all writable) ---
+# --- Ensure Nginx runtime paths exist (all under /home/app, all writable) ---
 mkdir -p \
   "${RUNTIME_ROOT}/client_temp" \
   "${RUNTIME_ROOT}/proxy_temp" \
@@ -102,5 +102,4 @@ fi
 # --- Launch Nginx in the foreground using our config under /home/app ---
 echo ">>> Launching Nginx in the foreground..."
 exec nginx -c "${CONF_ROOT}/nginx.conf" -g 'daemon off;'
-
 

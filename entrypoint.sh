@@ -1,165 +1,103 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 echo ">>> Starting entrypoint"
 
-RENDER_PORT="${PORT:-10000}"         # Render’s required listener
-GATEWAY_PORT=5000                    # IBKR’s internal HTTPS
-IBKR_ZIP_URL="${IBKR_ZIP_URL:-https://download2.interactivebrokers.com/portal/clientportal.gw.zip}"
-EXTRACT_DIR="/home/app/ibgateway"
+# Render provides $PORT; default for local runs:
+export PORT="${PORT:-10000}"
 
-echo ">>> Render PORT: $RENDER_PORT"
-echo ">>> Internal Gateway HTTPS port: $GATEWAY_PORT"
-echo ">>> IBKR bundle URL: $IBKR_ZIP_URL"
+# Your IBKR gateway listens on HTTPS :5000 inside the container
+export GATEWAY_PORT="${GATEWAY_PORT:-5000}"
+export IBKR_BUNDLE_URL="${IBKR_BUNDLE_URL:-https://download2.interactivebrokers.com/portal/clientportal.gw.zip}"
 
-# Download bundle fresh each boot (keeps us on IBKR’s expected structure)
+echo ">>> Render PORT: ${PORT}"
+echo ">>> Internal Gateway HTTPS port: ${GATEWAY_PORT}"
+echo ">>> IBKR bundle URL: ${IBKR_BUNDLE_URL}"
+
+# --- Download & unpack IBKR Client Portal Gateway (fresh on every boot) ---
 echo ">>> Downloading IBKR Client Portal Gateway..."
-curl -fsSL "$IBKR_ZIP_URL" -o /tmp/clientportal.gw.zip
-
+curl -fsSL "$IBKR_BUNDLE_URL" -o clientportal.gw.zip
 echo ">>> Unzipping Gateway..."
-rm -rf "$EXTRACT_DIR"
-mkdir -p "$EXTRACT_DIR"
-unzip -oq /tmp/clientportal.gw.zip -d "$EXTRACT_DIR"
+rm -rf ./bin ./build ./dist ./doc ./root || true
+unzip -q clientportal.gw.zip
+rm -f clientportal.gw.zip
 
 echo ">>> Listing extracted contents (top-level):"
-ls -la "$EXTRACT_DIR"
+ls -alh
 
-# Sanity checks
-if [ ! -f "$EXTRACT_DIR/bin/run.sh" ]; then
-  echo "!!! ERROR: $EXTRACT_DIR/bin/run.sh not found"
-  find "$EXTRACT_DIR" -maxdepth 3 -name run.sh -print || true
-  exit 1
-fi
-if [ ! -f "$EXTRACT_DIR/root/conf.yaml" ]; then
-  echo "!!! ERROR: $EXTRACT_DIR/root/conf.yaml not found"
-  find "$EXTRACT_DIR" -maxdepth 3 -name conf.yaml -print || true
-  exit 1
-fi
-chmod +x "$EXTRACT_DIR/bin/run.sh"
-
-# Start gateway (it uses its own Java; keep CWD so relative classpaths resolve)
-cd "$EXTRACT_DIR"
-echo ">>> Starting IBKR Gateway (HTTPS on :$GATEWAY_PORT)..."
-./bin/run.sh root/conf.yaml &
-
-# Wait for HTTPS on :5000 without nc
-echo ">>> Waiting for gateway to listen on :$GATEWAY_PORT..."
-for i in {1..120}; do
-  if curl -sk "https://127.0.0.1:${GATEWAY_PORT}/" -o /dev/null --max-time 1; then
-    echo ">>> Gateway is up on :$GATEWAY_PORT"
+# --- Start the IBKR Gateway (HTTPS on 127.0.0.1:$GATEWAY_PORT) ---
+echo ">>> Starting IBKR Gateway (HTTPS on :${GATEWAY_PORT})..."
+# The JAR and conf.yaml come from the bundle
+# It self-binds to 127.0.0.1 and serves HTTPS
+(
+  set -x
+  java -jar dist/ibgroup.web.core.iblink.router.clientportal.gw.jar --config root/conf.yaml &
+)
+# Wait a moment for it to come up
+echo ">>> Waiting for gateway to listen on :${GATEWAY_PORT}..."
+for i in {1..60}; do
+  if curl -sk "https://127.0.0.1:${GATEWAY_PORT}/" -o /dev/null; then
     break
   fi
   sleep 1
 done
+echo ">>> Gateway is up on :${GATEWAY_PORT}"
 
-# Derive public host for rewriting. Render sets X-Forwarded-Host for external reqs,
-# but here we must pick something static. Use the first Host seen at runtime if present;
-# otherwise fall back to an env var or known domain.
-PUBLIC_HOST_DEFAULT="${PUBLIC_HOST:-ibkr-gateway-codesphere.onrender.com}"
+# --- Ensure Nginx paths exist ---
+mkdir -p /var/cache/nginx /var/run /var/log/nginx
 
-echo ">>> Ensuring Nginx temp paths exist..."
-mkdir -p /tmp/nginx/client_body /tmp/nginx/proxy /tmp/nginx/fastcgi /tmp/nginx/uwsgi /tmp/nginx/scgi
+# --- Write Nginx config ---
+# If you created nginx/app.conf in your repo, we’ll transform its placeholders.
+# Otherwise we’ll fall back to a safe inline config.
+if [ -f "./nginx/app.conf" ]; then
+  echo ">>> Writing Nginx config from nginx/app.conf (templated)..."
+  mkdir -p /etc/nginx/conf.d
+  sed -e "s/__PORT__/${PORT}/g" \
+      -e "s/__GATEWAY_PORT__/${GATEWAY_PORT}/g" \
+      ./nginx/app.conf > /etc/nginx/conf.d/app.conf
+else
+  echo ">>> Writing Nginx config (inline fallback)..."
+  cat >/etc/nginx/conf.d/app.conf <<NGINX
+server {
+    listen 0.0.0.0:${PORT};
+    server_name _;
 
-# Build nginx.conf with:
-# - proxy_redirect regex for absolute redirects
-# - proxy_cookie_domain rewrite
-# - proxy_cookie_flags to force Secure; SameSite=None
-# - sub_filter to rewrite any 'https://localhost:5000' (and 127.0.0.1) in HTML/JS/CSS/etc.
-cat >/tmp/ibkr-nginx.conf <<'NGX'
-worker_processes  1;
-pid /tmp/nginx.pid;
+    # IBKR uses lots of headers/cookies; give headroom
+    large_client_header_buffers 4 16k;
 
-events { worker_connections 1024; }
-
-http {
-  include       /etc/nginx/mime.types;
-  default_type  application/octet-stream;
-
-  access_log /dev/stdout;
-  error_log  /dev/stderr info;
-  server_tokens off;
-  absolute_redirect off;
-
-  # Bigger buffers; IBKR sets chunky headers/cookies
-  client_max_body_size 10m;
-  large_client_header_buffers 8 64k;
-  proxy_buffers 16 16k;
-  proxy_buffer_size 64k;
-  proxy_busy_buffers_size 128k;
-
-  client_body_temp_path /tmp/nginx/client_body;
-  proxy_temp_path       /tmp/nginx/proxy;
-  fastcgi_temp_path     /tmp/nginx/fastcgi;
-  uwsgi_temp_path       /tmp/nginx/uwsgi;
-  scgi_temp_path        /tmp/nginx/scgi;
-
-  map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-  }
-
-  # We’ll substitute localhost URLs inside any text-like response.
-  # NOTE: This is safe here because IBKR serves mostly HTML/JS/CSS from /sso/* and root.
-  # We enable on all types to catch JS bundles as well.
-  # The replacement host is injected below with SED.
-  sub_filter_types *;
-  sub_filter_once off;
-
-  server {
-    listen       __RENDER_PORT__;
-    server_name  _;
-
-    # Set this variable so sub_filter has the correct public scheme+host
-    set $public_base https://__PUBLIC_HOST__;
-
-    # Body rewriting for hard-coded localhost URLs (both 127.0.0.1 and localhost)
-    sub_filter "https://localhost:5000"   $public_base;
-    sub_filter "https://127.0.0.1:5000"   $public_base;
-
-    # Main proxy to the internal HTTPS gateway on :5000
     location / {
-      proxy_pass https://127.0.0.1:5000;
+        proxy_pass https://127.0.0.1:${GATEWAY_PORT};
+        proxy_ssl_verify off;
+        proxy_http_version 1.1;
 
-      # Standard proxy headers
-      proxy_set_header Host              $host;
-      proxy_set_header X-Real-IP         $remote_addr;
-      proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto https;
-      proxy_set_header X-Forwarded-Host  $host;
-      proxy_set_header X-Forwarded-Port  443;
-      proxy_set_header Upgrade           $http_upgrade;
-      proxy_set_header Connection        $connection_upgrade;
+        # Preserve original host & client details
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
 
-      # Preserve for CSRF checks
-      proxy_set_header Referer           $http_referer;
-      proxy_set_header Origin            $http_origin;
+        # IMPORTANT: do NOT force http here. Pass through Render's header.
+        proxy_set_header X-Forwarded-Proto \$http_x_forwarded_proto;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port \$server_port;
 
-      proxy_http_version 1.1;
+        # WebSocket/SSE friendliness
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
 
-      # Backend uses self-signed TLS; we trust it locally
-      proxy_ssl_verify      off;
-      proxy_ssl_server_name off;
-
-      # Fix absolute redirects pointing to localhost
-      proxy_redirect ~^https://(localhost|127\.0\.0\.1):5000(/.*)?$ https://$host$2;
-
-      # Rewrite cookie domain if present
-      proxy_cookie_domain ~^(localhost|127\.0\.0\.1)$ $host;
-
-      # Force modern cookie attributes (stronger than appending)
-      proxy_cookie_flags ~ Secure SameSite=None;
-
-      # As a belt-and-suspenders, still append attributes on path
-      proxy_cookie_path / "/; Secure; SameSite=None";
+        # Keep upstream redirects intact
+        proxy_redirect off;
     }
-  }
+
+    # Simple health check
+    location = /healthz { return 200 "ok\n"; add_header Content-Type text/plain; }
 }
-NGX
+NGINX
+fi
 
-# Inject actual values
-sed -i "s/__RENDER_PORT__/${RENDER_PORT}/g" /tmp/ibkr-nginx.conf
-sed -i "s/__PUBLIC_HOST__/${PUBLIC_HOST_DEFAULT}/g" /tmp/ibkr-nginx.conf
-
+# --- Launch Nginx in foreground (Render expects this to stay in the foreground) ---
 echo ">>> Launching Nginx in the foreground..."
-exec nginx -c /tmp/ibkr-nginx.conf -g 'daemon off;'
+exec nginx -g 'daemon off;'
 

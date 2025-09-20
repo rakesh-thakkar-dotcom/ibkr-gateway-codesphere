@@ -1,49 +1,42 @@
-# ---- Base image ----
 FROM debian:bookworm-slim
 
 # System deps:
 # - ca-certificates: TLS trust store
-# - curl, unzip: to download/unpack IBKR gateway
-# - nginx: reverse proxy to expose the IBKR HTTPS service
-# - openjdk-17-jre-headless: Java runtime required by IBKR gateway
+# - curl, unzip: download/unpack IBKR gateway
+# - nginx: reverse proxy
+# - openjdk-17-jre-headless: Java runtime for IBKR
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl unzip nginx openjdk-17-jre-headless \
  && rm -rf /var/lib/apt/lists/*
 
-# ---- Non-root user (Render-friendly) ----
+# Non-root user (Render-friendly)
 RUN useradd -m -u 1000 app
 WORKDIR /home/app
 
-# ---- Copy Nginx configs ----
-# TEMPLATE stays in /home/app so entrypoint can substitute PORTs at runtime.
+# Copy Nginx template and our non-root nginx.conf (we keep both under /home/app)
 COPY nginx/app.conf /home/app/nginx/app.conf
-# This replaces the default Nginx config to use app-owned dirs (pid/temp).
-COPY nginx/nginx.conf /etc/nginx/nginx.conf
+COPY nginx/nginx.conf /home/app/nginx-conf/nginx.conf
 
-# ---- Entrypoint ----
+# Entrypoint
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# ---- Ensure all Nginx runtime paths exist and are app-writable ----
+# Pre-create Nginx runtime & config dirs fully under /home/app (owned by app)
 RUN mkdir -p \
-      /var/cache/nginx/client_temp \
-      /var/cache/nginx/proxy_temp \
-      /var/cache/nginx/fastcgi_temp \
-      /var/cache/nginx/uwsgi_temp \
-      /var/cache/nginx/scgi_temp \
-      /var/run/nginx \
-      /var/log/nginx \
-      /etc/nginx/conf.d \
-      /var/lib/nginx \
- && chown -R app:app /var/cache/nginx /var/run /var/log/nginx /etc/nginx /var/lib/nginx
+      /home/app/nginx-conf/conf.d \
+      /home/app/nginx-runtime/client_temp \
+      /home/app/nginx-runtime/proxy_temp \
+      /home/app/nginx-runtime/fastcgi_temp \
+      /home/app/nginx-runtime/uwsgi_temp \
+      /home/app/nginx-runtime/scgi_temp \
+      /home/app/nginx-logs
 
-# ---- Run as non-root ----
+# Run as non-root
 USER app
 
 # Render sets $PORT at runtime; expose a sane local default
 EXPOSE 10000
 
 CMD ["/usr/local/bin/entrypoint.sh"]
-
 

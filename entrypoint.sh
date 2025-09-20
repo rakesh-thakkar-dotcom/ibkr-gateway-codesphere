@@ -27,12 +27,13 @@ ls -alh
 
 # --- Start the IBKR Gateway (HTTPS on 127.0.0.1:$GATEWAY_PORT) ---
 echo ">>> Starting IBKR Gateway (HTTPS on :${GATEWAY_PORT})..."
-# The JAR and conf.yaml come from the bundle
-# It self-binds to 127.0.0.1 and serves HTTPS
+# Ensure the vendor script is executable
+chmod +x ./bin/run.sh || true
 (
   set -x
-  java -jar dist/ibgroup.web.core.iblink.router.clientportal.gw.jar --config root/conf.yaml &
+  ./bin/run.sh root/conf.yaml &
 )
+
 # Wait a moment for it to come up
 echo ">>> Waiting for gateway to listen on :${GATEWAY_PORT}..."
 for i in {1..60}; do

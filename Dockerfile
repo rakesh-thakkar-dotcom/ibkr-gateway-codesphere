@@ -21,6 +21,10 @@ COPY nginx/app.conf /home/app/nginx/app.conf
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Ensure nginx system dirs exist and are writable by the non-root user
+RUN mkdir -p /var/cache/nginx /var/run /var/log/nginx \
+ && chown -R app:app /var/cache/nginx /var/run /var/log/nginx
+
 # Run as non-root
 USER app
 

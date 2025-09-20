@@ -25,6 +25,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 RUN mkdir -p /var/cache/nginx /var/run /var/log/nginx \
  && chown -R app:app /var/cache/nginx /var/run /var/log/nginx
 
+# Make nginx dirs (incl. conf.d) writable for the non-root user
+RUN mkdir -p /var/cache/nginx /var/run /var/log/nginx /etc/nginx/conf.d \
+ && chown -R app:app /var/cache/nginx /var/run /var/log/nginx /etc/nginx
+
 # Run as non-root
 USER app
 

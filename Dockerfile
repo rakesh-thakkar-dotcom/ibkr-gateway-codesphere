@@ -10,7 +10,7 @@ RUN apt-get update \
 RUN useradd -m -u 1000 app
 WORKDIR /home/app
 
-# Nginx templates/config (kept under /home/app to avoid /etc writes)
+# Nginx templates/config stored under /home/app (writable by app)
 COPY nginx/app.conf /home/app/nginx/app.conf
 COPY nginx/nginx.conf /home/app/nginx-conf/nginx.conf
 
@@ -18,7 +18,7 @@ COPY nginx/nginx.conf /home/app/nginx-conf/nginx.conf
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Create writable nginx runtime & config dirs, then hand ownership to app
+# Create writable nginx runtime & config dirs
 RUN mkdir -p \
       /home/app/nginx-conf/conf.d \
       /home/app/nginx-runtime/client_temp \

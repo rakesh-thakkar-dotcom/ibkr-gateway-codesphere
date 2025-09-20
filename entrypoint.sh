@@ -10,7 +10,6 @@ export PORT="${PORT:-10000}"
 export GATEWAY_PORT="${GATEWAY_PORT:-5000}"
 export IBKR_BUNDLE_URL="${IBKR_BUNDLE_URL:-https://download2.interactivebrokers.com/portal/clientportal.gw.zip}"
 
-# Paths we control (no writes to /etc or /var)
 CONF_ROOT="/home/app/nginx-conf"
 CONF_D="$CONF_ROOT/conf.d"
 RUNTIME_ROOT="/home/app/nginx-runtime"
@@ -19,7 +18,7 @@ echo ">>> Render PORT: ${PORT}"
 echo ">>> Internal Gateway HTTPS port: ${GATEWAY_PORT}"
 echo ">>> IBKR bundle URL: ${IBKR_BUNDLE_URL}"
 
-# --- Download & unpack IBKR Client Portal Gateway (fresh on every boot) ---
+# --- Download & unpack IBKR Client Portal Gateway ---
 echo ">>> Downloading IBKR Client Portal Gateway..."
 curl -fsSL "$IBKR_BUNDLE_URL" -o clientportal.gw.zip
 echo ">>> Unzipping Gateway..."
@@ -65,46 +64,50 @@ if [ -f "./nginx/app.conf" ]; then
       ./nginx/app.conf > "${CONF_D}/app.conf"
 else
   echo ">>> Writing Nginx config (inline fallback) -> ${CONF_D}/app.conf"
-  cat > "${CONF_D}/app.conf" <<NGINX
+  cat > "${CONF_D}/app.conf" <<'NGINX'
 server {
-    listen 0.0.0.0:${PORT};
+    listen 0.0.0.0:__PORT__;
     server_name _;
 
     large_client_header_buffers 8 64k;
 
     location / {
-        proxy_pass https://127.0.0.1:${GATEWAY_PORT};
+        proxy_pass https://127.0.0.1:__GATEWAY_PORT__;
         proxy_ssl_verify off;
         proxy_ssl_server_name on;
         proxy_http_version 1.1;
 
-        # Forwarded headers IBKR expects when behind TLS-terminating proxy
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # Force what the app expects behind TLS edge
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Port 443;
 
         # WebSocket/SSE
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
         proxy_buffering off;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
 
-        # Rewrite absolute redirects from the gateway to our public host
-        proxy_redirect https://127.0.0.1:${GATEWAY_PORT}/ \$scheme://\$host/;
-        proxy_redirect https://localhost:${GATEWAY_PORT}/ \$scheme://\$host/;
-        proxy_redirect https://localhost/ \$scheme://\$host/;
+        # Rewrite absolute redirects from the gateway
+        proxy_redirect https://127.0.0.1:__GATEWAY_PORT__/ $scheme://$host/;
+        proxy_redirect https://localhost:__GATEWAY_PORT__/ $scheme://$host/;
+        proxy_redirect https://localhost/ $scheme://$host/;
     }
 
     location = /healthz { return 200 "ok\n"; add_header Content-Type text/plain; }
 }
 NGINX
+  # fill placeholders for fallback
+  sed -i "s/__PORT__/${PORT}/g; s/__GATEWAY_PORT__/${GATEWAY_PORT}/g" "${CONF_D}/app.conf"
 fi
 
 # --- Launch Nginx in the foreground using our config under /home/app ---
 echo ">>> Launching Nginx in the foreground..."
 exec nginx -c "${CONF_ROOT}/nginx.conf" -g 'daemon off;'
+
 

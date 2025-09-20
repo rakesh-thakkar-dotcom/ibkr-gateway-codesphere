@@ -63,53 +63,8 @@ if [ -f "./nginx/app.conf" ]; then
       -e "s/__GATEWAY_PORT__/${GATEWAY_PORT}/g" \
       ./nginx/app.conf > "${CONF_D}/app.conf"
 else
-  echo ">>> Writing Nginx config (inline fallback) -> ${CONF_D}/app.conf"
-  cat > "${CONF_D}/app.conf" <<'NGINX'
-server {
-    listen 0.0.0.0:__PORT__;
-    server_name _;
-
-    # Generous headroom for cookies/headers
-    large_client_header_buffers 8 64k;
-
-    # --- Main reverse proxy to the local HTTPS gateway ---
-    location / {
-        proxy_pass https://127.0.0.1:__GATEWAY_PORT__;
-        proxy_ssl_verify off;
-        proxy_ssl_server_name on;
-        proxy_http_version 1.1;
-
-        # Forward client details
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-
-        # Force TLS edge semantics so app doesn't think it's on http:5000
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Port 443;
-
-        # WebSocket/SSE
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_buffering off;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-
-        # Rewrite absolute redirects from the gateway
-        proxy_redirect https://127.0.0.1:__GATEWAY_PORT__/ $scheme://$host/;
-        proxy_redirect https://localhost:__GATEWAY_PORT__/ $scheme://$host/;
-        proxy_redirect https://localhost/ $scheme://$host/;
-
-        # *** CRITICAL: rewrite upstream cookies (Domain=localhost, odd paths) ***
-        proxy_cookie_domain ~.* $host;
-        proxy_cookie_path ~*^/.* /;
-    }
-
-    location = /healthz { return 200 "ok\n"; add_header Content-Type text/plain; }
-}
-NGINX
-  sed -i "s/__PORT__/${PORT}/g; s/__GATEWAY_PORT__/${GATEWAY_PORT}/g" "${CONF_D}/app.conf"
+  echo ">>> FATAL: nginx/app.conf template missing"
+  exit 1
 fi
 
 # --- Launch Nginx in the foreground using our config under /home/app ---

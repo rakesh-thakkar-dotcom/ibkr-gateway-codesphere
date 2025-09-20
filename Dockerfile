@@ -14,6 +14,9 @@ RUN apt-get update \
 RUN useradd -m -u 1000 app
 WORKDIR /home/app
 
+# Add this line so the template file lands in the image:
+COPY nginx/app.conf /home/app/nginx/app.conf
+
 # Entrypoint
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

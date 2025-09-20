@@ -14,7 +14,7 @@ RUN apt-get update \
 RUN useradd -m -u 1000 app
 WORKDIR /home/app
 
-# Copy Nginx template and our non-root nginx.conf (we keep both under /home/app)
+# Copy Nginx template and our non-root nginx.conf (kept under /home/app)
 COPY nginx/app.conf /home/app/nginx/app.conf
 COPY nginx/nginx.conf /home/app/nginx-conf/nginx.conf
 
@@ -22,7 +22,7 @@ COPY nginx/nginx.conf /home/app/nginx-conf/nginx.conf
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Pre-create Nginx runtime & config dirs fully under /home/app (owned by app)
+# Pre-create Nginx runtime & config dirs under /home/app (created as root now) …
 RUN mkdir -p \
       /home/app/nginx-conf/conf.d \
       /home/app/nginx-runtime/client_temp \
@@ -32,11 +32,13 @@ RUN mkdir -p \
       /home/app/nginx-runtime/scgi_temp \
       /home/app/nginx-logs
 
-# Run as non-root
+# …then make sure EVERYTHING under /home/app is owned by user `app`
+RUN chown -R app:app /home/app
+
+# Run as non-root from here on
 USER app
 
 # Render sets $PORT at runtime; expose a sane local default
 EXPOSE 10000
 
 CMD ["/usr/local/bin/entrypoint.sh"]
-

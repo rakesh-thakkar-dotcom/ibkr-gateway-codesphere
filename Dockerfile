@@ -29,6 +29,12 @@ RUN mkdir -p /var/cache/nginx /var/run /var/log/nginx \
 RUN mkdir -p /var/cache/nginx /var/run /var/log/nginx /etc/nginx/conf.d \
  && chown -R app:app /var/cache/nginx /var/run /var/log/nginx /etc/nginx
 
+# Nginx writable dirs for non-root runtime
+RUN mkdir -p /var/cache/nginx /var/run /var/log/nginx \
+           /etc/nginx/conf.d \
+           /var/lib/nginx/body /var/lib/nginx/fastcgi /var/lib/nginx/proxy /var/lib/nginx/scgi /var/lib/nginx/uwsgi \
+ && chown -R app:app /var/cache/nginx /var/run /var/log/nginx /etc/nginx /var/lib/nginx
+
 # Run as non-root
 USER app
 

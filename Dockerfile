@@ -18,7 +18,7 @@ COPY nginx/nginx.conf /home/app/nginx-conf/nginx.conf
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Create writable nginx runtime & config dirs (created as root now) …
+# Create writable nginx runtime & config dirs, then hand ownership to app
 RUN mkdir -p \
       /home/app/nginx-conf/conf.d \
       /home/app/nginx-runtime/client_temp \
@@ -26,10 +26,8 @@ RUN mkdir -p \
       /home/app/nginx-runtime/fastcgi_temp \
       /home/app/nginx-runtime/uwsgi_temp \
       /home/app/nginx-runtime/scgi_temp \
-      /home/app/nginx-logs
-
-# …then hand ownership to the non-root user so templating works at runtime
-RUN chown -R app:app /home/app
+      /home/app/nginx-logs \
+ && chown -R app:app /home/app
 
 # Drop privileges
 USER app

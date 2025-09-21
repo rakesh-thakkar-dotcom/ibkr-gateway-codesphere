@@ -1,31 +1,29 @@
 FROM debian:bookworm-slim
 
 # System deps
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip nginx openjdk-17-jre-headless \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl unzip nginx openjdk-17-jre-headless \
  && rm -rf /var/lib/apt/lists/*
 
-# Non-root user
-RUN useradd -m -u 1000 app
-WORKDIR /home/app
+# Workdir
+WORKDIR /opt/gateway
 
-# App files
-COPY nginx/app.conf /home/app/nginx/app.conf
+# Nginx config
+COPY nginx/app.conf /etc/nginx/conf.d/app.conf
+
+# Entrypoint
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# User-writable nginx dirs
-RUN mkdir -p \
-      /home/app/nginx-conf/conf.d \
-      /home/app/nginx-runtime/client_temp \
-      /home/app/nginx-runtime/proxy_temp \
-      /home/app/nginx-runtime/fastcgi_temp \
-      /home/app/nginx-runtime/uwsgi_temp \
-      /home/app/nginx-runtime/scgi_temp \
-      /home/app/nginx-logs \
- && chown -R app:app /home/app
+# Render exposes $PORT; default to 10000 for local
+ENV PORT=10000
+ENV GATEWAY_PORT=5000
+ENV IBKR_BUNDLE_URL="https://download2.interactivebrokers.com/portal/clientportal.gw.zip"
 
-USER app
+# We run as root inside the container to avoid nginx pid/permission issues on Render
+USER root
+
 EXPOSE 10000
-CMD ["/usr/local/bin/entrypoint.sh"]
 
+CMD ["/usr/local/bin/entrypoint.sh"]

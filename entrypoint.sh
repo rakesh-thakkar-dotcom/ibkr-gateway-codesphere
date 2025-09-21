@@ -1,93 +1,81 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -euo pipefail
+
+echo ">>> Starting entrypoint"
 
 PORT="${PORT:-10000}"
 GATEWAY_PORT="${GATEWAY_PORT:-5000}"
-BUNDLE_URL="${BUNDLE_URL:-https://download2.interactivebrokers.com/portal/clientportal.gw.zip}"
+IBKR_BUNDLE_URL="${IBKR_BUNDLE_URL:-https://download2.interactivebrokers.com/portal/clientportal.gw.zip}"
 
-echo ">>> Render PORT: $PORT"
-echo ">>> Internal Gateway HTTPS port: $GATEWAY_PORT"
-echo ">>> IBKR bundle URL: $BUNDLE_URL"
+echo ">>> Render PORT: ${PORT}"
+echo ">>> Internal Gateway HTTPS port: ${GATEWAY_PORT}"
+echo ">>> IBKR bundle URL: ${IBKR_BUNDLE_URL}"
 
-cd "${HOME}"
+# Clean old bundle if any
+rm -rf ./bin ./build ./dist ./doc ./root || true
 
+# Download + unzip the IBKR Gateway bundle fresh each start
 echo ">>> Downloading IBKR Client Portal Gateway..."
-curl -fsSL "$BUNDLE_URL" -o clientportal.gw.zip
-
+curl -fsSL "$IBKR_BUNDLE_URL" -o clientportal.gw.zip
 echo ">>> Unzipping Gateway..."
-rm -rf bin build dist doc root || true
 unzip -q clientportal.gw.zip
 rm -f clientportal.gw.zip
 
 echo ">>> Listing extracted contents (top-level):"
 ls -alh
 
-echo ">>> Starting IBKR Gateway (HTTPS on :$GATEWAY_PORT)..."
-set +e
+# Start the IBKR Gateway (vendor script)
+echo ">>> Starting IBKR Gateway (HTTPS on :${GATEWAY_PORT})..."
+chmod +x ./bin/run.sh || true
 ./bin/run.sh root/conf.yaml &
-GATEWAY_PID=$!
-set -e
 
-echo ">>> Waiting for gateway to listen on :$GATEWAY_PORT..."
-for i in {1..90}; do
-  if curl -ks "https://127.0.0.1:${GATEWAY_PORT}/sso/Login?forwardTo=22&RL=1&ip2loc=US" -o /dev/null; then
-    echo ">>> Gateway is up on :$GATEWAY_PORT"
+# Wait until the gateway answers on 127.0.0.1:${GATEWAY_PORT} over HTTPS
+echo ">>> Waiting for gateway to listen on :${GATEWAY_PORT}..."
+for i in $(seq 1 90); do
+  if curl -sk "https://127.0.0.1:${GATEWAY_PORT}/" -o /dev/null; then
+    echo ">>> Gateway is up on :${GATEWAY_PORT}"
     break
   fi
   sleep 1
 done
 
-# --------------------------
-# NGINX CONFIG (base file)
-# --------------------------
-echo ">>> Writing base Nginx config -> /home/app/nginx-conf/nginx.conf"
-cat > /home/app/nginx-conf/nginx.conf <<NGINX_BASE
+# Minimal nginx main config
+cat >/etc/nginx/nginx.conf <<'NG'
+user  root;
 worker_processes auto;
-pid /home/app/nginx-runtime/nginx.pid;
-error_log /dev/stderr info;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
 
-events {
-  worker_connections 1024;
-}
+events { worker_connections 1024; }
 
 http {
-  include /etc/nginx/mime.types;
-  default_type application/octet-stream;
+  include       /etc/nginx/mime.types;
+  default_type  application/octet-stream;
 
-  log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
-                  '\$status \$body_bytes_sent "\$http_referer" '
-                  '"\$http_user_agent" "\$http_x_forwarded_for"';
-  access_log /dev/stdout main;
+  # Keep things simple and transparent
+  sendfile        on;
+  tcp_nopush      on;
+  tcp_nodelay     on;
 
-  sendfile on;
-  tcp_nopush on;
-  tcp_nodelay on;
+  # Increase header buffers for IBKR pages
+  large_client_header_buffers 4 16k;
 
-  client_max_body_size 20m;
+  # Don’t rewrite redirects
+  proxy_redirect          off;
+  proxy_buffering         off;
+  proxy_request_buffering off;
 
-  # temp/cache dirs writable by non-root user
-  proxy_temp_path /home/app/nginx-runtime/proxy_temp;
-  client_body_temp_path /home/app/nginx-runtime/client_temp;
-  fastcgi_temp_path /home/app/nginx-runtime/fastcgi_temp;
-  uwsgi_temp_path /home/app/nginx-runtime/uwsgi_temp;
-  scgi_temp_path /home/app/nginx-runtime/scgi_temp;
+  # Longer timeouts for streaming/WebSocket-ish behavior
+  proxy_read_timeout  3600s;
+  proxy_send_timeout  3600s;
 
-  # Propagate original TLS/port from Render (falls back to Nginx's own)
-  map \$http_x_forwarded_proto \$real_proto { default \$scheme; ~. \$http_x_forwarded_proto; }
-  map \$http_x_forwarded_port  \$real_port  { default \$server_port; ~. \$http_x_forwarded_port; }
+  # Let underscores pass (some gateways use them)
+  underscores_in_headers on;
 
-  include /home/app/nginx-conf/conf.d/*.conf;
+  # Include our server block
+  include /etc/nginx/conf.d/*.conf;
 }
-NGINX_BASE
-
-# --------------------------
-# NGINX vhost (templated)
-# --------------------------
-mkdir -p /home/app/nginx-conf/conf.d
-echo ">>> Writing Nginx vhost from nginx/app.conf (templated) -> /home/app/nginx-conf/conf.d/app.conf"
-sed -e "s/__PORT__/${PORT}/g" \
-    -e "s/__GATEWAY_PORT__/${GATEWAY_PORT}/g" \
-    /home/app/nginx/app.conf > /home/app/nginx-conf/conf.d/app.conf
+NG
 
 echo ">>> Launching Nginx in the foreground..."
-exec nginx -c /home/app/nginx-conf/nginx.conf -g "daemon off;"
+exec nginx -g 'daemon off;'

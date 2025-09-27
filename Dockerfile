@@ -12,6 +12,9 @@ WORKDIR /opt/gateway
 # Nginx config
 COPY nginx/app.conf /etc/nginx/conf.d/app.conf
 
+# Template for conf.yaml that we fill at runtime
+COPY conf.public.yaml /conf.public.yaml
+
 # Entrypoint
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

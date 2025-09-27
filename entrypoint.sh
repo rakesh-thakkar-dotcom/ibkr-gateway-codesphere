@@ -1,81 +1,55 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo ">>> Starting entrypoint"
+# --- Render envs ---
+: "${PORT:=10000}"   # Render will route to this (no need to set it in the dashboard)
 
-PORT="${PORT:-10000}"
-GATEWAY_PORT="${GATEWAY_PORT:-5000}"
-IBKR_BUNDLE_URL="${IBKR_BUNDLE_URL:-https://download2.interactivebrokers.com/portal/clientportal.gw.zip}"
+# --- Figure out our public hostname for redirects/cookies ---
+# Prefer RENDER_EXTERNAL_HOSTNAME (paid) or fall back to a manual env PUBLIC_HOST
+PUBLIC_HOST="${RENDER_EXTERNAL_HOSTNAME:-${PUBLIC_HOST:-}}"
+if [[ -z "${PUBLIC_HOST}" ]]; then
+  echo "ERROR: PUBLIC_HOST is not set. Set it to your Render hostname (e.g., ibkr-gateway-new-2.onrender.com)."
+  exit 1
+fi
+echo ">>> Using PUBLIC_HOST=${PUBLIC_HOST}"
 
-echo ">>> Render PORT: ${PORT}"
-echo ">>> Internal Gateway HTTPS port: ${GATEWAY_PORT}"
-echo ">>> IBKR bundle URL: ${IBKR_BUNDLE_URL}"
+# --- Paths ---
+GW_DIR="/opt/gateway"
+mkdir -p "${GW_DIR}"
+cd "${GW_DIR}"
 
-# Clean old bundle if any
-rm -rf ./bin ./build ./dist ./doc ./root || true
-
-# Download + unzip the IBKR Gateway bundle fresh each start
+# --- Download IBKR Client Portal Gateway bundle ---
 echo ">>> Downloading IBKR Client Portal Gateway..."
-curl -fsSL "$IBKR_BUNDLE_URL" -o clientportal.gw.zip
-echo ">>> Unzipping Gateway..."
-unzip -q clientportal.gw.zip
-rm -f clientportal.gw.zip
+curl -fsSL "https://download2.interactivebrokers.com/portal/clientportal.gw.zip" -o bundle.zip
+unzip -q bundle.zip
+rm -f bundle.zip
 
+# Sanity: show top-level
 echo ">>> Listing extracted contents (top-level):"
-ls -alh
+ls -lah
 
-# Start the IBKR Gateway (vendor script)
-echo ">>> Starting IBKR Gateway (HTTPS on :${GATEWAY_PORT})..."
-chmod +x ./bin/run.sh || true
+# --- Render our conf.yaml from template ---
+echo ">>> Writing root/conf.yaml with PUBLIC_HOST=${PUBLIC_HOST}"
+mkdir -p root
+awk -v h="${PUBLIC_HOST}" '
+  { gsub(/\$\{PUBLIC_HOST\}/, h); print }
+' /conf.public.yaml > root/conf.yaml
+
+echo ">>> Starting IBKR Gateway (HTTPS on :5000)..."
+# Start the gateway in background
 ./bin/run.sh root/conf.yaml &
 
-# Wait until the gateway answers on 127.0.0.1:${GATEWAY_PORT} over HTTPS
-echo ">>> Waiting for gateway to listen on :${GATEWAY_PORT}..."
-for i in $(seq 1 90); do
-  if curl -sk "https://127.0.0.1:${GATEWAY_PORT}/" -o /dev/null; then
-    echo ">>> Gateway is up on :${GATEWAY_PORT}"
+# --- Wait for :5000 to be ready ---
+echo ">>> Waiting for gateway to listen on :5000..."
+for i in {1..60}; do
+  if curl -sk https://127.0.0.1:5000/ >/dev/null 2>&1; then
+    echo ">>> Gateway is up on :5000"
     break
   fi
   sleep 1
 done
 
-# Minimal nginx main config
-cat >/etc/nginx/nginx.conf <<'NG'
-user  root;
-worker_processes auto;
-error_log /var/log/nginx/error.log warn;
-pid /var/run/nginx.pid;
-
-events { worker_connections 1024; }
-
-http {
-  include       /etc/nginx/mime.types;
-  default_type  application/octet-stream;
-
-  # Keep things simple and transparent
-  sendfile        on;
-  tcp_nopush      on;
-  tcp_nodelay     on;
-
-  # Increase header buffers for IBKR pages
-  large_client_header_buffers 4 16k;
-
-  # Don’t rewrite redirects
-  proxy_redirect          off;
-  proxy_buffering         off;
-  proxy_request_buffering off;
-
-  # Longer timeouts for streaming/WebSocket-ish behavior
-  proxy_read_timeout  3600s;
-  proxy_send_timeout  3600s;
-
-  # Let underscores pass (some gateways use them)
-  underscores_in_headers on;
-
-  # Include our server block
-  include /etc/nginx/conf.d/*.conf;
-}
-NG
-
+# --- Start Nginx (front door on $PORT) ---
 echo ">>> Launching Nginx in the foreground..."
-exec nginx -g 'daemon off;'
+nginx -g 'daemon off;'
+

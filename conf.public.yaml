@@ -1,9 +1,11 @@
-# Minimal override that makes the gateway produce correct redirects/cookies
-server:
-  listen: 0.0.0.0
-  port: 5000
+# IBKR Client Portal Gateway config (flat, no "server:" block)
 
-  # ↓ Set by entrypoint using your Render host (no https://)
-  publicHost: ${PUBLIC_HOST}
-  publicPort: 443
-  useSsl: true
+# Bind the internal gateway to HTTPS on 5000 (inside the container)
+listen: 0.0.0.0
+port: 5000
+
+# Tell the gateway what your *public* host is so it issues correct redirects/cookies
+publicHost: ${PUBLIC_HOST}   # e.g. ibkr-gateway-new-2.onrender.com  (NO https://)
+publicPort: 443              # Render serves HTTPS
+useSsl: true                 # so cookies are Secure + SameSite=None friendly
+

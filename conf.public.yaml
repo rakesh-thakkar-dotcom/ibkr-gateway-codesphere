@@ -1,0 +1,9 @@
+# Minimal override that makes the gateway produce correct redirects/cookies
+server:
+  listen: 0.0.0.0
+  port: 5000
+
+  # ↓ Set by entrypoint using your Render host (no https://)
+  publicHost: ${PUBLIC_HOST}
+  publicPort: 443
+  useSsl: true

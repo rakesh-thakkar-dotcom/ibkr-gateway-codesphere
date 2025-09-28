@@ -1,11 +1,52 @@
-# IBKR Client Portal Gateway config (flat, no "server:" block)
+# conf.public.yaml
+# Valid schema for IBKR Client Portal Gateway (2023+ builds)
 
-# Bind the internal gateway to HTTPS on 5000 (inside the container)
-listen: 0.0.0.0
-port: 5000
+# Country hint for login page
+ip2loc: "US"
 
-# Tell the gateway what your *public* host is so it issues correct redirects/cookies
-publicHost: ${PUBLIC_HOST}   # e.g. ibkr-gateway-new-2.onrender.com  (NO https://)
-publicPort: 443              # Render serves HTTPS
-useSsl: true                 # so cookies are Secure + SameSite=None friendly
+# Upstream (IBKR) API edge
+proxyRemoteSsl: true
+proxyRemoteHost: "https://api.ibkr.com"
+
+# Where the Gateway listens *inside the container*
+listenPort: 5000
+listenSsl: true
+
+# Which API surface to expose
+svcEnvironment: "v1"
+
+# The bundled keystore the Gateway ships with
+sslCert: "root/conf/vertx.jks"
+sslPwd: "mywebapi"
+
+# <<< IMPORTANT: set this to your public Render base URL >>>
+# This fixes the login redirects so the browser returns to your Render host,
+# not to https://localhost:5000
+portalBaseURL: "https://ibkr-gateway-new-2.onrender.com"
+
+# Runtime tuning (safe defaults)
+serverOptions:
+  blockedThreadCheckInterval: 1000000
+  eventLoopPoolSize: 20
+  workerPoolSize: 20
+  maxWorkerExecuteTime: 100
+  internalBlockingPoolSize: 20
+
+# CORS: keep open; we’re fronted by Nginx/Render TLS anyway
+cors:
+  origin.allowed: ""
+  allowCredentials: false
+
+# Static demo app (optional)
+webApps:
+  - name: "demo"
+    index: "index.html"
+
+# IP allow/deny (Gateway checks this before auth)
+ips:
+  allow:
+    - 0.0.0.0
+    - 127.0.0.1
+    - 172.17.0.*
+  deny: []
 

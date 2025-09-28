@@ -12,6 +12,9 @@ WORKDIR /opt/gateway
 # Nginx config
 COPY nginx/app.conf /etc/nginx/conf.d/app.conf
 
+# 🔽 Remove the default site that listens on :80
+RUN rm -f /etc/nginx/conf.d/default.conf
+
 # Template for conf.yaml that we fill at runtime
 COPY conf.public.yaml /conf.public.yaml
 

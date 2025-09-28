@@ -29,11 +29,13 @@ echo ">>> Listing extracted contents (top-level):"
 ls -lah
 
 # --- Render our conf.yaml from template ---
-echo ">>> Writing root/conf.yaml with PUBLIC_HOST=${PUBLIC_HOST}"
-mkdir -p root
-awk -v h="${PUBLIC_HOST}" '
-  { gsub(/\$\{PUBLIC_HOST\}/, h); print }
-' /conf.public.yaml > root/conf.yaml
+#echo ">>> Writing root/conf.yaml with PUBLIC_HOST=${PUBLIC_HOST}"
+#mkdir -p root
+#awk -v h="${PUBLIC_HOST}" '
+#  { gsub(/\$\{PUBLIC_HOST\}/, h); print }
+#' /conf.public.yaml > root/conf.yaml
+
+cp /conf.public.yaml /opt/gateway/root/conf.yaml
 
 echo ">>> Starting IBKR Gateway (HTTPS on :5000)..."
 # Start the gateway in background

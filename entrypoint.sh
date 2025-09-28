@@ -1,49 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- Render envs ---
-: "${PORT:=10000}"   # Render will route to this (no need to set it in the dashboard)
+# Render assigns PORT=10000; our nginx listens on 10000 via app.conf.
+: "${PORT:=10000}"
 
-# --- Figure out our public hostname for redirects/cookies ---
-# Prefer RENDER_EXTERNAL_HOSTNAME (paid) or fall back to a manual env PUBLIC_HOST
-PUBLIC_HOST="${RENDER_EXTERNAL_HOSTNAME:-${PUBLIC_HOST:-}}"
-if [[ -z "${PUBLIC_HOST}" ]]; then
-  echo "ERROR: PUBLIC_HOST is not set. Set it to your Render hostname (e.g., ibkr-gateway-new-2.onrender.com)."
-  exit 1
-fi
-echo ">>> Using PUBLIC_HOST=${PUBLIC_HOST}"
-
-# --- Paths ---
 GW_DIR="/opt/gateway"
-mkdir -p "${GW_DIR}"
-cd "${GW_DIR}"
+mkdir -p "$GW_DIR"
+cd "$GW_DIR"
 
-# --- Download IBKR Client Portal Gateway bundle ---
 echo ">>> Downloading IBKR Client Portal Gateway..."
-curl -fsSL "https://download2.interactivebrokers.com/portal/clientportal.gw.zip" -o bundle.zip
-unzip -q bundle.zip
-rm -f bundle.zip
+curl -fsSL "https://download2.interactivebrokers.com/portal/clientportal.gw.zip" -o gw.zip
+unzip -q gw.zip
+rm -f gw.zip
 
-# Sanity: show top-level
+# Show what was unpacked (sanity check)
 echo ">>> Listing extracted contents (top-level):"
 ls -lah
 
-# --- Render our conf.yaml from template ---
-#echo ">>> Writing root/conf.yaml with PUBLIC_HOST=${PUBLIC_HOST}"
-#mkdir -p root
-#awk -v h="${PUBLIC_HOST}" '
-#  { gsub(/\$\{PUBLIC_HOST\}/, h); print }
-#' /conf.public.yaml > root/conf.yaml
-
-cp /conf.public.yaml /opt/gateway/root/conf.yaml
+# Ensure the default config from the bundle is present.
+if [[ ! -f root/conf.yaml ]]; then
+  echo "ERROR: Missing root/conf.yaml inside the IBKR bundle."
+  ls -lah root || true
+  exit 1
+fi
 
 echo ">>> Starting IBKR Gateway (HTTPS on :5000)..."
-# Start the gateway in background
+# Launch the Java gateway in the background using the bundled config
 ./bin/run.sh root/conf.yaml &
 
-# --- Wait for :5000 to be ready ---
+# Wait for the gateway HTTPS listener to come up on 5000
 echo ">>> Waiting for gateway to listen on :5000..."
-for i in {1..60}; do
+for i in {1..90}; do
   if curl -sk https://127.0.0.1:5000/ >/dev/null 2>&1; then
     echo ">>> Gateway is up on :5000"
     break
@@ -51,7 +38,7 @@ for i in {1..60}; do
   sleep 1
 done
 
-# --- Start Nginx (front door on $PORT) ---
+# Start nginx in the foreground (Render needs the main process to stay in foreground)
 echo ">>> Launching Nginx in the foreground..."
 nginx -g 'daemon off;'
 
